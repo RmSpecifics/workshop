@@ -7,6 +7,20 @@
   var ADMIN_AUTH_KEY = "mshl_admin_auth_v1";
 
   // ---------- STORAGE HELPERS ----------
+  function generateSessionId() {
+    var chars = "abcdefghjkmnpqrstuvwxyz23456789"; // no ambiguous chars (0/o, 1/l/i)
+    var id = "";
+    for (var i = 0; i < 8; i++) {
+      id += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return id;
+  }
+
+  function getUrlSessionId() {
+    var params = new URLSearchParams(window.location.search);
+    return params.get("s");
+  }
+
   function loadSession() {
     try {
       var raw = localStorage.getItem(STORAGE_KEY);
@@ -28,7 +42,13 @@
   function isSessionActive(session) {
     if (!session || !session.active) return false;
     var now = Date.now();
-    return now < session.expiresAt;
+    if (now >= session.expiresAt) return false;
+    // If this page load came in via a session-specific URL (?s=...),
+    // that ID must match the currently active session — otherwise this
+    // is an old QR code/link pointing at a session that's been replaced.
+    var urlId = getUrlSessionId();
+    if (urlId && session.id && urlId !== session.id) return false;
+    return true;
   }
 
   // ---------- ELEMENTS ----------
@@ -212,10 +232,14 @@
   });
 
   // ---------- ADMIN DASHBOARD ----------
-  function getCheckinUrl() {
+  function getCheckinUrl(session) {
     var url = new URL(window.location.href);
     url.hash = "";
-    url.search = "";
+    if (session && session.id) {
+      url.searchParams.set("s", session.id);
+    } else {
+      url.searchParams.delete("s");
+    }
     return url.toString();
   }
 
@@ -252,11 +276,13 @@
   }
 
   function renderQrPanel() {
-    var url = getCheckinUrl();
+    var session = loadSession();
+    var url = getCheckinUrl(session);
     qrPanel.innerHTML =
       '<p class="card-sub" style="margin-bottom:4px;">Display or print this QR code for the workshop:</p>' +
       '<div id="qrcodeCanvas"></div>' +
-      '<div class="url-text">' + url + '</div>';
+      '<div class="url-text">' + url + '</div>' +
+      '<p class="card-sub" style="margin-top:10px; font-size:0.78rem;">Session code: ' + (session && session.id ? session.id : "—") + '</p>';
 
     if (window.QRCode) {
       new QRCode(document.getElementById("qrcodeCanvas"), {
@@ -345,6 +371,7 @@
     }
     var now = Date.now();
     var newSession = {
+      id: generateSessionId(),
       active: true,
       startedAt: now,
       expiresAt: now + hours * 60 * 60 * 1000,
