@@ -3,10 +3,40 @@
 
   // ---------- CONFIG ----------
   var ADMIN_PASSWORD = "mshlAdmin34"; // set by the developer before deploying
-  var STORAGE_KEY = "mshl_checkin_session_v1";
   var ADMIN_AUTH_KEY = "mshl_admin_auth_v1";
+  var FIREBASE_DB_URL = "https://mshl-workshop-default-rtdb.firebaseio.com";
+  var SESSION_PATH = "/session.json";
 
-  // ---------- STORAGE HELPERS ----------
+  // ---------- FIREBASE (REST API) HELPERS ----------
+  function fetchSession() {
+    return fetch(FIREBASE_DB_URL + SESSION_PATH)
+      .then(function (res) {
+        if (!res.ok) throw new Error("Firebase fetch failed: " + res.status);
+        return res.json();
+      })
+      .catch(function (err) {
+        console.error("Error loading session from Firebase:", err);
+        return null;
+      });
+  }
+
+  function putSession(session) {
+    return fetch(FIREBASE_DB_URL + SESSION_PATH, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(session)
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error("Firebase write failed: " + res.status);
+        return res.json();
+      })
+      .catch(function (err) {
+        console.error("Error saving session to Firebase:", err);
+        return null;
+      });
+  }
+
+  // ---------- SESSION HELPERS ----------
   function generateSessionId() {
     var chars = "abcdefghjkmnpqrstuvwxyz23456789"; // no ambiguous chars (0/o, 1/l/i)
     var id = "";
@@ -19,24 +49,6 @@
   function getUrlSessionId() {
     var params = new URLSearchParams(window.location.search);
     return params.get("s");
-  }
-
-  function loadSession() {
-    try {
-      var raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return null;
-      return JSON.parse(raw);
-    } catch (e) {
-      return null;
-    }
-  }
-
-  function saveSession(session) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-  }
-
-  function clearSession() {
-    localStorage.removeItem(STORAGE_KEY);
   }
 
   function isSessionActive(session) {
@@ -60,6 +72,7 @@
   var stepForm = document.getElementById("step-form");
   var stepSuccess = document.getElementById("step-success");
   var stepEnded = document.getElementById("step-ended");
+  var stepLoading = document.getElementById("step-loading");
 
   var seg1 = document.getElementById("seg1");
   var seg2 = document.getElementById("seg2");
@@ -101,25 +114,26 @@
 
   // ---------- VISITOR FLOW ----------
   function showVisitorStep(step) {
-    [stepConsent, stepForm, stepSuccess, stepEnded].forEach(function (el) {
-      el.classList.add("hidden");
+    [stepConsent, stepForm, stepSuccess, stepEnded, stepLoading].forEach(function (el) {
+      if (el) el.classList.add("hidden");
     });
     step.classList.remove("hidden");
   }
 
   function initVisitorFlow() {
-    var session = loadSession();
+    if (stepLoading) showVisitorStep(stepLoading);
 
-    if (!isSessionActive(session)) {
-      showVisitorStep(stepEnded);
-      seg1.classList.remove("active");
+    fetchSession().then(function (session) {
+      if (!isSessionActive(session)) {
+        showVisitorStep(stepEnded);
+        seg1.classList.remove("active");
+        seg2.classList.remove("active");
+        return;
+      }
+      showVisitorStep(stepConsent);
+      seg1.classList.add("active");
       seg2.classList.remove("active");
-      return;
-    }
-
-    showVisitorStep(stepConsent);
-    seg1.classList.add("active");
-    seg2.classList.remove("active");
+    });
   }
 
   consentCheck.addEventListener("change", function () {
@@ -128,20 +142,23 @@
   });
 
   btnContinue.addEventListener("click", function () {
-    var session = loadSession();
-    if (!isSessionActive(session)) {
-      seg1.classList.remove("active");
-      seg2.classList.remove("active");
-      showVisitorStep(stepEnded);
-      return;
-    }
-    pendingArrivalISO = new Date().toISOString();
-    arrivalTimeDisplay.textContent = new Date(pendingArrivalISO).toLocaleString("en-ZA", {
-      hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short"
+    btnContinue.disabled = true;
+    fetchSession().then(function (session) {
+      if (!isSessionActive(session)) {
+        seg1.classList.remove("active");
+        seg2.classList.remove("active");
+        showVisitorStep(stepEnded);
+        return;
+      }
+      pendingArrivalISO = new Date().toISOString();
+      arrivalTimeDisplay.textContent = new Date(pendingArrivalISO).toLocaleString("en-ZA", {
+        hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short"
+      });
+      showVisitorStep(stepForm);
+      seg2.classList.add("active");
+      firstNameInput.focus();
+      btnContinue.disabled = false;
     });
-    showVisitorStep(stepForm);
-    seg2.classList.add("active");
-    firstNameInput.focus();
   });
 
   btnBack.addEventListener("click", function () {
@@ -158,26 +175,42 @@
       return;
     }
     formError.classList.remove("show");
+    btnSubmit.disabled = true;
+    btnSubmit.textContent = "Signing in...";
 
-    var session = loadSession();
-    if (!isSessionActive(session)) {
-      showVisitorStep(stepEnded);
-      return;
-    }
+    fetchSession().then(function (session) {
+      if (!isSessionActive(session)) {
+        btnSubmit.disabled = false;
+        btnSubmit.textContent = "Sign in";
+        showVisitorStep(stepEnded);
+        return;
+      }
 
-    session.entries = session.entries || [];
-    session.entries.push({
-      firstName: first,
-      lastName: last,
-      arrivalISO: pendingArrivalISO || new Date().toISOString()
+      session.entries = session.entries || [];
+      var arrivalISO = pendingArrivalISO || new Date().toISOString();
+      session.entries.push({
+        firstName: first,
+        lastName: last,
+        arrivalISO: arrivalISO
+      });
+
+      return putSession(session).then(function (result) {
+        btnSubmit.disabled = false;
+        btnSubmit.textContent = "Sign in";
+
+        if (!result) {
+          formError.textContent = "Couldn't reach the server — please check your connection and try again.";
+          formError.classList.add("show");
+          return;
+        }
+
+        successDetail.textContent =
+          "Thanks, " + first + " — your arrival at " +
+          new Date(arrivalISO).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) +
+          " has been recorded.";
+        showVisitorStep(stepSuccess);
+      });
     });
-    saveSession(session);
-
-    successDetail.textContent =
-      "Thanks, " + first + " — your arrival at " +
-      new Date(session.entries[session.entries.length - 1].arrivalISO).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) +
-      " has been recorded.";
-    showVisitorStep(stepSuccess);
   });
 
   // ---------- ADMIN ACCESS ----------
@@ -244,39 +277,43 @@
   }
 
   function renderAdmin() {
-    var session = loadSession();
-    var active = isSessionActive(session);
+    qrPanel.innerHTML = '<p class="card-sub" style="margin-bottom:0;">Loading session…</p>';
+    statusLabel.textContent = "Loading…";
+    statusSub.textContent = "";
 
-    statusDot.classList.toggle("off", !active);
-    btnCloseSession.classList.toggle("hidden", !active);
+    fetchSession().then(function (session) {
+      var active = isSessionActive(session);
 
-    if (active) {
-      statusLabel.textContent = "Session active";
-      var startedDate = new Date(session.startedAt);
-      var expiresDate = new Date(session.expiresAt);
-      statusSub.textContent = "Created " + startedDate.toLocaleString("en-ZA", {
-        day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit"
-      }) + " — Expires " + expiresDate.toLocaleString("en-ZA", {
-        day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit"
-      });
-      statSession.textContent = "Active";
-      statExpires.textContent = expiresDate.toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" });
-      renderQrPanel();
-    } else {
-      statusLabel.textContent = "No active session";
-      statusSub.textContent = "Generate a new QR code to start accepting check-ins.";
-      statSession.textContent = "Closed";
-      statExpires.textContent = "—";
-      qrPanel.innerHTML = '<p class="card-sub" style="margin-bottom:0;">No active QR code. Click "Generate new QR code" above to start a session.</p>';
-    }
+      statusDot.classList.toggle("off", !active);
+      btnCloseSession.classList.toggle("hidden", !active);
 
-    var entries = (session && session.entries) || [];
-    statTotal.textContent = entries.length;
-    renderEntriesTable(entries);
+      if (active) {
+        statusLabel.textContent = "Session active";
+        var startedDate = new Date(session.startedAt);
+        var expiresDate = new Date(session.expiresAt);
+        statusSub.textContent = "Created " + startedDate.toLocaleString("en-ZA", {
+          day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit"
+        }) + " — Expires " + expiresDate.toLocaleString("en-ZA", {
+          day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit"
+        });
+        statSession.textContent = "Active";
+        statExpires.textContent = expiresDate.toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" });
+        renderQrPanel(session);
+      } else {
+        statusLabel.textContent = "No active session";
+        statusSub.textContent = "Generate a new QR code to start accepting check-ins.";
+        statSession.textContent = "Closed";
+        statExpires.textContent = "—";
+        qrPanel.innerHTML = '<p class="card-sub" style="margin-bottom:0;">No active QR code. Click "Generate new QR code" above to start a session.</p>';
+      }
+
+      var entries = (session && session.entries) || [];
+      statTotal.textContent = entries.length;
+      renderEntriesTable(entries);
+    });
   }
 
-  function renderQrPanel() {
-    var session = loadSession();
+  function renderQrPanel(session) {
     var url = getCheckinUrl(session);
     qrPanel.innerHTML =
       '<p class="card-sub" style="margin-bottom:4px;">Display or print this QR code for the workshop:</p>' +
@@ -346,17 +383,20 @@
   durationHours.addEventListener("input", updateDurationPreview);
 
   btnNewSession.addEventListener("click", function () {
-    var existing = loadSession();
-    if (isSessionActive(existing)) {
-      var confirmReplace = window.confirm(
-        "There's already an active session with " + (existing.entries || []).length +
-        " check-ins. Creating a new one will end the current session. Continue?"
-      );
-      if (!confirmReplace) return;
-    }
-    durationHours.value = "24";
-    updateDurationPreview();
-    durationPanel.classList.remove("hidden");
+    btnNewSession.disabled = true;
+    fetchSession().then(function (existing) {
+      btnNewSession.disabled = false;
+      if (isSessionActive(existing)) {
+        var confirmReplace = window.confirm(
+          "There's already an active session with " + (existing.entries || []).length +
+          " check-ins. Creating a new one will end the current session. Continue?"
+        );
+        if (!confirmReplace) return;
+      }
+      durationHours.value = "24";
+      updateDurationPreview();
+      durationPanel.classList.remove("hidden");
+    });
   });
 
   btnCancelDuration.addEventListener("click", function () {
@@ -369,6 +409,9 @@
       durationPreview.innerHTML = '<span style="color:#B23A2E;">Enter a valid number of hours greater than 0.</span>';
       return;
     }
+    btnConfirmDuration.disabled = true;
+    btnConfirmDuration.textContent = "Creating...";
+
     var now = Date.now();
     var newSession = {
       id: generateSessionId(),
@@ -378,46 +421,59 @@
       durationHours: hours,
       entries: []
     };
-    saveSession(newSession);
-    durationPanel.classList.add("hidden");
-    renderAdmin();
+
+    putSession(newSession).then(function (result) {
+      btnConfirmDuration.disabled = false;
+      btnConfirmDuration.textContent = "Create session";
+
+      if (!result) {
+        durationPreview.innerHTML = '<span style="color:#B23A2E;">Could not create session — check your connection and try again.</span>';
+        return;
+      }
+      durationPanel.classList.add("hidden");
+      renderAdmin();
+    });
   });
 
   btnCloseSession.addEventListener("click", function () {
-    var session = loadSession();
-    if (!session) return;
     var confirmClose = window.confirm("Close this session now? The QR code will stop working immediately.");
     if (!confirmClose) return;
-    session.active = false;
-    session.expiresAt = Date.now() - 1;
-    saveSession(session);
-    renderAdmin();
+
+    fetchSession().then(function (session) {
+      if (!session) return;
+      session.active = false;
+      session.expiresAt = Date.now() - 1;
+      putSession(session).then(function () {
+        renderAdmin();
+      });
+    });
   });
 
   btnExport.addEventListener("click", function () {
-    var session = loadSession();
-    var entries = (session && session.entries) || [];
-    if (entries.length === 0) {
-      window.alert("No check-ins to export yet.");
-      return;
-    }
-    var rows = [["First name", "Surname", "Arrival time"]];
-    entries.forEach(function (e) {
-      rows.push([e.firstName, e.lastName, new Date(e.arrivalISO).toLocaleString("en-ZA")]);
-    });
-    var csv = rows.map(function (row) {
-      return row.map(function (cell) {
-        return '"' + String(cell).replace(/"/g, '""') + '"';
-      }).join(",");
-    }).join("\n");
+    fetchSession().then(function (session) {
+      var entries = (session && session.entries) || [];
+      if (entries.length === 0) {
+        window.alert("No check-ins to export yet.");
+        return;
+      }
+      var rows = [["First name", "Surname", "Arrival time"]];
+      entries.forEach(function (e) {
+        rows.push([e.firstName, e.lastName, new Date(e.arrivalISO).toLocaleString("en-ZA")]);
+      });
+      var csv = rows.map(function (row) {
+        return row.map(function (cell) {
+          return '"' + String(cell).replace(/"/g, '""') + '"';
+        }).join(",");
+      }).join("\n");
 
-    var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    var link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = "workshop-checkin-" + new Date().toISOString().slice(0, 10) + ".csv";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+      var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      var link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "workshop-checkin-" + new Date().toISOString().slice(0, 10) + ".csv";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    });
   });
 
   // ---------- INIT ----------
@@ -425,11 +481,13 @@
 
   // Re-check session expiry periodically while the visitor page is open
   setInterval(function () {
-    if (!viewVisitor.classList.contains("hidden")) {
-      var session = loadSession();
-      if (!isSessionActive(session) && stepEnded.classList.contains("hidden")) {
-        showVisitorStep(stepEnded);
-      }
+    if (!viewVisitor.classList.contains("hidden") && stepEnded.classList.contains("hidden") &&
+        (!stepLoading || stepLoading.classList.contains("hidden"))) {
+      fetchSession().then(function (session) {
+        if (!isSessionActive(session)) {
+          showVisitorStep(stepEnded);
+        }
+      });
     }
   }, 30000);
 })();
