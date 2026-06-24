@@ -522,7 +522,7 @@
 
   @media (max-width: 600px) {
     .stats-row { grid-template-columns: 1fr 1fr; }
-    th:nth-child(3), td:nth-child(3) { display: none; }
+    th:nth-child(3), td:nth-child(3), th:nth-child(4), td:nth-child(4) { display: none; }
   }
 
   a:focus-visible, button:focus-visible, input:focus-visible {
@@ -616,6 +616,18 @@
     </div>
     <h2 class="card-title">You're signed in</h2>
     <p class="card-sub" id="successDetail">Thanks — your arrival has been recorded.</p>
+
+    <button class="btn btn-primary" id="btnSignOut" disabled>Sign out</button>
+    <p class="card-sub" id="signOutCountdown" style="margin-top:10px; margin-bottom:0; font-size:0.85rem;"></p>
+  </div>
+
+  <!-- Signed out -->
+  <div id="step-signed-out" class="card center-card hidden">
+    <div class="success-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+    </div>
+    <h2 class="card-title">You're signed out</h2>
+    <p class="card-sub" id="signOutDetail">Thanks — your departure has been recorded.</p>
   </div>
 
   <!-- Session ended / not found -->
@@ -720,7 +732,7 @@
       </div>
       <table>
         <thead>
-          <tr><th>Name</th><th>Surname</th><th>Arrival time</th></tr>
+          <tr><th>Name</th><th>Surname</th><th>Arrival time</th><th>Departure time</th><th>Duration</th></tr>
         </thead>
         <tbody id="entriesBody"></tbody>
       </table>
