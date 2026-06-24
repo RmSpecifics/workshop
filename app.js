@@ -3,6 +3,7 @@
 
   // ---------- CONFIG ----------
   var ADMIN_PASSWORD = "mshlAdmin34"; // set by the developer before deploying
+  var SIGN_OUT_MIN_WAIT_MINUTES = 10; // minimum minutes after sign-in before sign-out is allowed
   var ADMIN_AUTH_KEY = "mshl_admin_auth_v1";
   var FIREBASE_DB_URL = "https://mshl-workshop-default-rtdb.firebaseio.com";
   var SESSION_PATH = "/session.json";
@@ -88,6 +89,10 @@
   var btnSubmit = document.getElementById("btnSubmit");
   var btnBack = document.getElementById("btnBack");
   var successDetail = document.getElementById("successDetail");
+  var btnSignOut = document.getElementById("btnSignOut");
+  var signOutCountdown = document.getElementById("signOutCountdown");
+  var stepSignedOut = document.getElementById("step-signed-out");
+  var signOutDetail = document.getElementById("signOutDetail");
 
   var adminEntryLink = document.getElementById("adminEntryLink");
   var adminPasswordInput = document.getElementById("adminPassword");
@@ -111,10 +116,14 @@
   var btnExport = document.getElementById("btnExport");
 
   var pendingArrivalISO = null;
+  var currentSessionId = null;
+  var currentEntryIndex = null;
+  var currentEntryArrivalISO = null;
+  var countdownInterval = null;
 
   // ---------- VISITOR FLOW ----------
   function showVisitorStep(step) {
-    [stepConsent, stepForm, stepSuccess, stepEnded, stepLoading].forEach(function (el) {
+    [stepConsent, stepForm, stepSuccess, stepEnded, stepLoading, stepSignedOut].forEach(function (el) {
       if (el) el.classList.add("hidden");
     });
     step.classList.remove("hidden");
@@ -161,6 +170,67 @@
     });
   });
 
+  // ---------- SIGN-OUT ----------
+  function startSignOutCountdown() {
+    if (countdownInterval) clearInterval(countdownInterval);
+    btnSignOut.disabled = true;
+
+    function tick() {
+      var elapsedMs = Date.now() - new Date(currentEntryArrivalISO).getTime();
+      var waitMs = SIGN_OUT_MIN_WAIT_MINUTES * 60 * 1000;
+      var remainingMs = waitMs - elapsedMs;
+
+      if (remainingMs <= 0) {
+        btnSignOut.disabled = false;
+        signOutCountdown.textContent = "You can sign out now.";
+        clearInterval(countdownInterval);
+        return;
+      }
+
+      var remainingSec = Math.ceil(remainingMs / 1000);
+      var mins = Math.floor(remainingSec / 60);
+      var secs = remainingSec % 60;
+      signOutCountdown.textContent =
+        "You can sign out in " + mins + ":" + (secs < 10 ? "0" : "") + secs;
+    }
+
+    tick();
+    countdownInterval = setInterval(tick, 1000);
+  }
+
+  btnSignOut.addEventListener("click", function () {
+    if (currentSessionId === null || currentEntryIndex === null) return;
+
+    btnSignOut.disabled = true;
+    btnSignOut.textContent = "Signing out...";
+
+    fetchSession().then(function (session) {
+      if (!session || session.id !== currentSessionId || !session.entries || !session.entries[currentEntryIndex]) {
+        btnSignOut.textContent = "Sign out";
+        signOutCountdown.textContent = "Couldn't find your check-in — please contact the organizer.";
+        return;
+      }
+
+      var departureISO = new Date().toISOString();
+      session.entries[currentEntryIndex].departureISO = departureISO;
+
+      putSession(session).then(function (result) {
+        if (!result) {
+          btnSignOut.disabled = false;
+          btnSignOut.textContent = "Sign out";
+          signOutCountdown.textContent = "Couldn't reach the server — please try again.";
+          return;
+        }
+        if (countdownInterval) clearInterval(countdownInterval);
+        signOutDetail.textContent =
+          "Thanks — your departure at " +
+          new Date(departureISO).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) +
+          " has been recorded.";
+        showVisitorStep(stepSignedOut);
+      });
+    });
+  });
+
   btnBack.addEventListener("click", function () {
     showVisitorStep(stepConsent);
     seg2.classList.remove("active");
@@ -188,6 +258,7 @@
 
       session.entries = session.entries || [];
       var arrivalISO = pendingArrivalISO || new Date().toISOString();
+      var entryIndex = session.entries.length;
       session.entries.push({
         firstName: first,
         lastName: last,
@@ -204,11 +275,16 @@
           return;
         }
 
+        currentSessionId = session.id;
+        currentEntryIndex = entryIndex;
+        currentEntryArrivalISO = arrivalISO;
+
         successDetail.textContent =
           "Thanks, " + first + " — your arrival at " +
           new Date(arrivalISO).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) +
           " has been recorded.";
         showVisitorStep(stepSuccess);
+        startSignOutCountdown();
       });
     });
   });
@@ -345,13 +421,27 @@
 
     entries.slice().reverse().forEach(function (entry) {
       var tr = document.createElement("tr");
-      var timeStr = new Date(entry.arrivalISO).toLocaleString("en-ZA", {
+      var arrivalStr = new Date(entry.arrivalISO).toLocaleString("en-ZA", {
         day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit"
       });
+      var departureStr = "—";
+      var durationStr = "—";
+      if (entry.departureISO) {
+        departureStr = new Date(entry.departureISO).toLocaleString("en-ZA", {
+          day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit"
+        });
+        var durationMs = new Date(entry.departureISO).getTime() - new Date(entry.arrivalISO).getTime();
+        var durationMins = Math.round(durationMs / 60000);
+        var hrs = Math.floor(durationMins / 60);
+        var mins = durationMins % 60;
+        durationStr = (hrs > 0 ? hrs + "h " : "") + mins + "m";
+      }
       tr.innerHTML =
         "<td>" + escapeHtml(entry.firstName) + "</td>" +
         "<td>" + escapeHtml(entry.lastName) + "</td>" +
-        "<td>" + timeStr + "</td>";
+        "<td>" + arrivalStr + "</td>" +
+        "<td>" + departureStr + "</td>" +
+        "<td>" + durationStr + "</td>";
       entriesBody.appendChild(tr);
     });
   }
@@ -456,9 +546,13 @@
         window.alert("No check-ins to export yet.");
         return;
       }
-      var rows = [["First name", "Surname", "Arrival time"]];
+      var rows = [["First name", "Surname", "Arrival time", "Departure time", "Duration (minutes)"]];
       entries.forEach(function (e) {
-        rows.push([e.firstName, e.lastName, new Date(e.arrivalISO).toLocaleString("en-ZA")]);
+        var departureStr = e.departureISO ? new Date(e.departureISO).toLocaleString("en-ZA") : "";
+        var durationMins = e.departureISO
+          ? Math.round((new Date(e.departureISO).getTime() - new Date(e.arrivalISO).getTime()) / 60000)
+          : "";
+        rows.push([e.firstName, e.lastName, new Date(e.arrivalISO).toLocaleString("en-ZA"), departureStr, durationMins]);
       });
       var csv = rows.map(function (row) {
         return row.map(function (cell) {
